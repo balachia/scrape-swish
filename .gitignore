@@ -1,0 +1,7 @@
+# Output
+*.csv
+
+# R environment
+.Rhistory
+.RData
+.Rproj.user/
