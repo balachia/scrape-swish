@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swish Class Schedule</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .updated { font-size: .75rem; color: #999; margin-bottom: 16px; }
+
+  .controls { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 16px; }
+  .controls-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .controls-row:last-child { margin-bottom: 0; }
+  label { font-size: .85rem; font-weight: 600; }
+  select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: .85rem; }
+  .checkbox-group { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .checkbox-group label { font-weight: 400; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .level-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+
+  .stats { font-size: .8rem; color: #666; margin-top: 4px; }
+
+  .schedule-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); overflow: hidden; }
+  .schedule-table th { background: #fafafa; font-size: .8rem; padding: 8px 10px; border: 1px solid #e0e0e0; text-align: center; }
+  .schedule-table th.group-header { background: #f0f0f0; font-weight: 700; border-bottom: none; }
+  .schedule-table th.sub-header { font-weight: 500; font-size: .75rem; color: #666; }
+  .schedule-table th.time-header { text-align: right; width: 80px; min-width: 80px; }
+  .schedule-table td { border: 1px solid #e8e8e8; padding: 4px 6px; vertical-align: top; min-width: 140px; }
+  .schedule-table td.time-cell { text-align: right; font-size: .8rem; font-weight: 600; color: #666; background: #fafafa; width: 80px; min-width: 80px; vertical-align: middle; }
+  .schedule-table tr.empty-row td { border-bottom-color: #f0f0f0; }
+
+  .class-chip { border-radius: 4px; padding: 5px 8px; margin-bottom: 4px; font-size: .75rem; color: #fff; border: 1px solid rgba(0,0,0,.12); cursor: pointer; line-height: 1.3; }
+  .class-chip:last-child { margin-bottom: 0; }
+  .class-chip.full { opacity: .3; }
+  .class-chip:hover { box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+  .chip-level { font-weight: 600; }
+  .chip-meta { font-size: .7rem; opacity: .9; }
+
+  .tooltip { position: fixed; background: #333; color: #fff; padding: 8px 12px; border-radius: 6px; font-size: .8rem; z-index: 100; pointer-events: none; max-width: 320px; line-height: 1.4; }
+
+  .empty-state { text-align: center; padding: 40px; color: #999; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<h1>Swish Class Schedule</h1>
+<div class="updated" id="updated"></div>
+
+<div class="controls">
+  <div class="controls-row">
+    <label>Day</label>
+    <select id="day-filter"></select>
+    <label><input type="checkbox" id="hide-full"> Hide full classes</label>
+  </div>
+  <div class="controls-row">
+    <label>Levels</label>
+    <div id="level-checkboxes" class="checkbox-group"></div>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+<div id="grid"></div>
+
+<div class="tooltip" id="tooltip" style="display:none"></div>
+
+<script>
+// __SWISH_DATA__ is injected by the R script
+const EMBEDDED_DATA = __SWISH_DATA__;
+
+const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DEFAULT_LEVELS = ['Zuma Beginner 2', 'Zuma Rainbow'];
+const STORAGE_KEY = 'swish-prefs';
+const LEVEL_COLORS = {};
+let allData = [];
+let allLevels = [];
+let locGroups = [];
+
+function parseTime(str) {
+  str = str.trim();
+  const m = str.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!m) return 0;
+  let h = parseInt(m[1]);
+  const min = parseInt(m[2]);
+  const ap = m[3].toUpperCase();
+  if (ap === 'PM' && h !== 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+function formatTime(minutes) {
+  let h = Math.floor(minutes / 60);
+  const min = minutes % 60;
+  const ap = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  return `${h}:${min.toString().padStart(2, '0')} ${ap}`;
+}
+
+function extractCoach(name) {
+  const m = name.match(/with (.+?)\.?$/);
+  return m ? m[1] : '';
+}
+
+function subLocationName(fullLoc, shortLoc) {
+  if (fullLoc.startsWith(shortLoc + ' - ')) {
+    return fullLoc.slice(shortLoc.length + 3);
+  }
+  return fullLoc;
+}
+
+function assignColors(levels) {
+  const palette = [
+    '#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f',
+    '#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac',
+    '#86bcb6','#8cd17d','#d4a6c8','#d7b5a6'
+  ];
+  levels.forEach((lv, i) => { LEVEL_COLORS[lv] = palette[i % palette.length]; });
+}
+
+function savePrefs() {
+  const day = document.getElementById('day-filter').value;
+  const hideFull = document.getElementById('hide-full').checked;
+  const levels = [...document.querySelectorAll('#level-checkboxes input:checked')].map(cb => cb.value);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ day, hideFull, levels })); } catch(e) {}
+}
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+function init() {
+  allData = EMBEDDED_DATA.classes.map(r => ({
+    ...r,
+    openings: parseInt(r.openings) || 0,
+    startMin: parseTime(r.startTime),
+    endMin: parseTime(r.endTime),
+    coach: extractCoach(r.name),
+  }));
+
+  // show last-updated timestamp
+  if (EMBEDDED_DATA.updated) {
+    document.getElementById('updated').textContent = 'Last updated: ' + EMBEDDED_DATA.updated;
+  }
+
+  // levels in order of first appearance
+  const seen = new Set();
+  allLevels = [];
+  allData.forEach(r => { if (!seen.has(r.level)) { seen.add(r.level); allLevels.push(r.level); }});
+  assignColors(allLevels);
+
+  // location groups
+  const shortOrder = [];
+  const groupMap = {};
+  allData.forEach(r => {
+    const s = r['location.short'];
+    const f = r.location;
+    if (!groupMap[s]) { groupMap[s] = new Set(); shortOrder.push(s); }
+    groupMap[s].add(f);
+  });
+  locGroups = shortOrder.map(s => ({ short: s, locations: [...groupMap[s]].sort() }));
+
+  buildFilters();
+  render();
+}
+
+function buildFilters() {
+  const prefs = loadPrefs();
+
+  // days
+  const daySelect = document.getElementById('day-filter');
+  const days = [...new Set(allData.map(r => r.dayName))];
+  days.sort((a, b) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b));
+  daySelect.innerHTML = days.map(d => `<option>${d}</option>`).join('');
+  if (prefs && days.includes(prefs.day)) {
+    daySelect.value = prefs.day;
+  } else {
+    daySelect.value = days.includes('Sat') ? 'Sat' : days[0];
+  }
+
+  // hide full
+  if (prefs) {
+    document.getElementById('hide-full').checked = prefs.hideFull;
+  }
+
+  // levels
+  const lvDiv = document.getElementById('level-checkboxes');
+  const savedLevels = prefs ? new Set(prefs.levels) : null;
+  lvDiv.innerHTML = allLevels.map(lv => {
+    const checked = savedLevels ? (savedLevels.has(lv) ? 'checked' : '') :
+      (DEFAULT_LEVELS.includes(lv) ? 'checked' : '');
+    return `<label><input type="checkbox" ${checked} value="${lv}">` +
+      `<span class="level-swatch" style="background:${LEVEL_COLORS[lv]}"></span>${lv}</label>`;
+  }).join('');
+
+  // bind events
+  const onChange = () => { savePrefs(); render(); };
+  daySelect.onchange = onChange;
+  document.getElementById('hide-full').onchange = onChange;
+  lvDiv.querySelectorAll('input').forEach(cb => cb.onchange = onChange);
+}
+
+function getFiltered() {
+  const day = document.getElementById('day-filter').value;
+  const hideFull = document.getElementById('hide-full').checked;
+  const checkedLevels = new Set(
+    [...document.querySelectorAll('#level-checkboxes input:checked')].map(cb => cb.value)
+  );
+
+  return allData.filter(r =>
+    r.dayName === day &&
+    checkedLevels.has(r.level) &&
+    (!hideFull || r.openings > 0)
+  );
+}
+
+function render() {
+  const data = getFiltered();
+  const gridEl = document.getElementById('grid');
+
+  document.getElementById('stats').textContent = `${data.length} classes shown`;
+
+  if (data.length === 0) {
+    gridEl.innerHTML = '<div class="empty-state">No classes match the current filters.</div>';
+    return;
+  }
+
+  const allLocs = locGroups.flatMap(g => g.locations);
+
+  // time slots
+  const slotSet = new Set();
+  data.forEach(r => slotSet.add(r.startMin));
+  const minSlot = Math.min(...slotSet);
+  const maxSlot = Math.max(...slotSet);
+  const timeSlots = [];
+  for (let t = minSlot; t <= maxSlot; t += 30) {
+    timeSlots.push(t);
+  }
+
+  // index: "time|location" -> [classes]
+  const index = {};
+  data.forEach(r => {
+    const key = `${r.startMin}|${r.location}`;
+    if (!index[key]) index[key] = [];
+    index[key].push(r);
+  });
+
+  let html = '<table class="schedule-table">';
+
+  // group header
+  html += '<thead><tr><th class="time-header group-header" rowspan="2">Time</th>';
+  locGroups.forEach(g => {
+    html += `<th class="group-header" colspan="${g.locations.length}">${g.short}</th>`;
+  });
+  html += '</tr>';
+
+  // sub-header
+  html += '<tr>';
+  locGroups.forEach(g => {
+    g.locations.forEach(loc => {
+      html += `<th class="sub-header">${subLocationName(loc, g.short)}</th>`;
+    });
+  });
+  html += '</tr></thead>';
+
+  // body
+  html += '<tbody>';
+  timeSlots.forEach(t => {
+    const hasAny = allLocs.some(loc => index[`${t}|${loc}`]);
+    const rowClass = hasAny ? '' : 'empty-row';
+    html += `<tr class="${rowClass}">`;
+    html += `<td class="time-cell">${formatTime(t)}</td>`;
+    allLocs.forEach(loc => {
+      const classes = index[`${t}|${loc}`] || [];
+      html += '<td>';
+      classes.forEach(cls => {
+        const fullClass = cls.openings === 0 ? 'full' : '';
+        const openLabel = cls.openings > 0 ? `${cls.openings} open` : 'full';
+        html += `<div class="class-chip ${fullClass}" style="background:${LEVEL_COLORS[cls.level]}" data-id="${cls.id}">`;
+        html += `<div class="chip-level">${cls.level}</div>`;
+        html += `<div class="chip-meta">${cls.coach} &middot; ${openLabel}</div>`;
+        html += '</div>';
+      });
+      html += '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+
+  gridEl.innerHTML = html;
+  bindChipEvents();
+}
+
+function bindChipEvents() {
+  const tooltip = document.getElementById('tooltip');
+  document.querySelectorAll('.class-chip').forEach(chip => {
+    chip.addEventListener('mouseenter', e => {
+      const id = chip.dataset.id;
+      const cls = allData.find(r => r.id === id);
+      if (!cls) return;
+      tooltip.innerHTML =
+        `<strong>${cls.level}</strong><br>` +
+        `${cls.coach}<br>` +
+        `${cls.dayName} ${cls.startTime} – ${cls.endTime}<br>` +
+        `${cls.location}<br>` +
+        `<strong>${cls.openings} opening${cls.openings !== 1 ? 's' : ''}</strong>` +
+        (cls.futureOpenings !== '0' ? ` (${cls.futureOpenings} future)` : '');
+      tooltip.style.display = '';
+    });
+    chip.addEventListener('mousemove', e => {
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    });
+    chip.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+  });
+}
+
+init();
+</script>
+</body>
+</html>

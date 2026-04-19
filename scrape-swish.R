@@ -149,6 +149,13 @@ class.dat[, helper2 := sprintf('%s|%s|%s|%s', dayName, location.short, level, st
 # sort descending by openings
 class.dat <- class.dat[order(level, -openings, dayNumber, location, startTime)]
 
-# export this shit
+# export CSV
 fwrite(class.dat, output_path)
+
+# export self-contained dashboard HTML
+dashboard_template <- readLines("./dashboard.html")
+class_json <- toJSON(class.dat, dataframe = "rows")
+embedded_json <- sprintf('{"classes":%s,"updated":"%s"}', class_json, format(Sys.time(), "%Y-%m-%d %H:%M %Z"))
+dashboard_out <- gsub("__SWISH_DATA__", embedded_json, paste(dashboard_template, collapse = "\n"), fixed = TRUE)
+writeLines(dashboard_out, "./index.html")
 
